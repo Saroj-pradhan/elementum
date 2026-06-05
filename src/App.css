@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+@font-face {
+  font-family: "Gerbil";
+  src: url("./assets/fonts/gerbil.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("./assets/fonts/OTF/Satoshi-Medium.otf") format("opentype");
+}
