@@ -1,11 +1,6 @@
-import './App.css'
 import HomePage from './pages/HomePage'
-function App() {
-  return (
-    <> 
-  <HomePage/>
-    </>
-  )
-}
+import './App.css'
 
-export default App
+export default function App() {
+  return <HomePage />
+}

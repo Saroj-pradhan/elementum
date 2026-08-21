@@ -1,10 +1,36 @@
-import Navbar from "../components/Navbar"
-function HomePage() {
-  return (
-    <>
-    <Navbar/>
-    </>
-  )
+import { useEffect, useMemo, useState } from 'react'
+import { firebaseEnabled } from '../firebase/config'
+import { ensureAnonymousUser } from '../firebase/auth'
+import { createRoom, joinRoom, setTeam, startRoom, watchRoom } from '../firebase/database'
+import { getPlayerId } from '../utils/roomCode'
+
+const savedRoom = () => localStorage.getItem('casino_room_code') || new URLSearchParams(location.search).get('room')?.toUpperCase() || ''
+
+export default function HomePage() {
+  const [mode, setMode] = useState('home'); const [name, setName] = useState(''); const [roomCode, setRoomCode] = useState(savedRoom)
+  const [room, setRoom] = useState(null); const [authUser, setAuthUser] = useState(null)
+  const [message, setMessage] = useState(firebaseEnabled ? 'Connecting…' : 'Firebase needs VITE_FIREBASE_DATABASE_URL before online rooms can work.')
+  const playerId = useMemo(() => getPlayerId(), [])
+  useEffect(() => { if (firebaseEnabled) ensureAnonymousUser().then((user) => { setAuthUser(user); setMessage('') }).catch(() => setMessage('Could not connect. Check Firebase Anonymous Authentication.')) }, [])
+  useEffect(() => { if (!authUser || !roomCode) return; return watchRoom(roomCode, (next) => { setRoom(next); setMode(next ? (next.status === 'lobby' ? 'lobby' : 'game') : 'home'); setMessage(next ? '' : 'Room not found.') }) }, [authUser, roomCode])
+  const run = async (task) => { if (!authUser) return setMessage('Still connecting.'); if (!name.trim()) return setMessage('Enter your name first.'); try { setMessage('Working…'); const code = await task(); localStorage.setItem('casino_room_code', code); setRoomCode(code); setMode('lobby'); setMessage('') } catch (error) { setMessage(error.message) } }
+  const copy = async (value, label) => { await navigator.clipboard.writeText(value); setMessage(`${label} copied.`) }
+  const share = async () => { const url = `${location.origin}${location.pathname}?room=${roomCode}`; if (navigator.share) await navigator.share({ title: 'Join my Cassino game', text: `Join room ${roomCode}`, url }); else await copy(url, 'Join link') }
+  const leave = () => { localStorage.removeItem('casino_room_code'); setRoomCode(''); setRoom(null); setMode('home'); setMessage('You left this device session.') }
+  if (mode === 'lobby' && room) return <Lobby {...{ room, playerId, message, setMessage, copy, share, leave }} />
+  if (mode === 'game' && room) return <Waiting room={room} leave={leave} />
+  return <Page><div className="mx-auto max-w-md pt-16 text-center sm:pt-28"><p className="font-['Gerbil'] text-sm tracking-[.4em] text-amber-300">CLASSIC CARD GAME</p><h1 className="mt-2 text-6xl font-black">CASSINO</h1><p className="mt-3 text-emerald-100/70">A private four-player partnership game.</p>{mode === 'home' ? <div className="mt-10 grid gap-3"><Action onClick={() => setMode('create')}>Create game</Action><Action secondary onClick={() => setMode('join')}>Join game</Action></div> : <div className="mt-10 rounded-3xl border border-white/10 bg-[#173128] p-5 text-left"><h2 className="text-xl font-black">{mode === 'join' ? 'Join a game' : 'Create a game'}</h2>{mode === 'join' && <Field label="Room code" value={roomCode} setValue={(value) => setRoomCode(value.toUpperCase())} placeholder="AB7K9C" maxLength="6" />}<Field label="Your name" value={name} setValue={setName} placeholder="Saroj" maxLength="20" /><Action onClick={() => mode === 'join' ? run(() => joinRoom({ roomCode, playerId, authUid: authUser.uid, name })) : run(() => createRoom({ playerId, authUid: authUser.uid, name }))}>{mode === 'join' ? 'Join room' : 'Create room'}</Action><button className="mt-4 w-full text-sm underline" onClick={() => setMode('home')}>Back</button></div>}<Message text={message} /></div></Page>
 }
 
-export default HomePage
+function Lobby({ room, playerId, message, setMessage, copy, share, leave }) {
+  const players = Object.values(room.players || {}).sort((a, b) => a.slot - b.slot); const isHost = room.hostPlayerId === playerId
+  const counts = players.reduce((all, player) => ({ ...all, [player.team]: (all[player.team] || 0) + 1 }), {}); const ready = players.length === 4 && counts[1] === 2 && counts[2] === 2
+  const changeTeam = (targetPlayerId, team) => setTeam({ roomCode: room.roomCode, playerId, hostPlayerId: room.hostPlayerId, targetPlayerId, team }).catch((error) => setMessage(error.message))
+  const start = () => startRoom({ roomCode: room.roomCode, playerId }).catch((error) => setMessage(error.message))
+  return <Page><div className="mx-auto max-w-xl py-8"><header className="text-center"><p className="font-['Gerbil'] text-xs tracking-[.35em] text-amber-300">YOUR PRIVATE TABLE</p><h1 className="text-4xl font-black">CASSINO</h1></header><section className="mt-6 rounded-3xl border border-white/10 bg-[#173128] p-5"><p className="text-center text-xs tracking-widest text-emerald-100/60">ROOM CODE</p><p className="mt-1 text-center text-4xl font-black tracking-[.2em] text-amber-300">{room.roomCode}</p><div className="mt-5 grid grid-cols-2 gap-2"><Action onClick={() => copy(room.roomCode, 'Room code')}>Copy code</Action><Action secondary onClick={() => share().catch(() => setMessage('Could not share the room.'))}>Share game</Action></div></section><section className="mt-4 rounded-3xl border border-white/10 bg-[#173128] p-5"><div className="mb-4 flex justify-between"><h2 className="font-black">Players</h2><span>{players.length} / 4</span></div>{[1,2,3,4].map((slot) => { const player = players.find((item) => item.slot === slot); return <div key={slot} className="mb-2 flex items-center justify-between rounded-2xl bg-black/20 px-4 py-3">{player ? <><div><b>🟢 {player.name} {player.isHost && <small className="text-amber-300">HOST</small>}</b><p className="text-xs text-emerald-100/60">Player {slot}</p></div>{isHost ? <select disabled={room.teamsLocked} value={player.team} onChange={(event) => changeTeam(player.playerId, Number(event.target.value))} className="rounded-lg bg-[#244638] px-2 py-1"><option value={1}>Team 1</option><option value={2}>Team 2</option></select> : <span className="text-amber-200">Team {player.team}</span>}</> : <span className="text-emerald-100/60">⚪ Waiting for Player {slot}</span>}</div> })}</section>{isHost ? <div className="mt-4"><Action disabled={!ready} onClick={start}>{ready ? 'Start game' : 'Need 4 players · 2 per team'}</Action></div> : <p className="mt-5 text-center text-emerald-100/70">{players.length === 4 ? 'Waiting for host to start…' : 'Waiting for more players…'}</p>}<button className="mt-6 w-full text-sm text-emerald-100/60 underline" onClick={leave}>Leave game on this device</button><Message text={message} /></div></Page>
+}
+function Waiting({ room, leave }) { return <Page><div className="mx-auto max-w-md pt-28 text-center"><p className="text-amber-300">ROOM {room.roomCode}</p><h1 className="mt-2 text-4xl font-black">Starting game…</h1><p className="mt-3 text-emerald-100/70">Teams are locked. The shared game table is being prepared.</p><button className="mt-8 text-sm underline" onClick={leave}>Leave game on this device</button></div></Page> }
+function Page({ children }) { return <main className="min-h-screen bg-[radial-gradient(circle_at_top,#284b3d,#101b17_58%)] px-4 text-[#fff7e7]">{children}</main> }
+function Field({ label, value, setValue, placeholder, maxLength }) { return <label className="mt-4 block text-sm font-bold text-emerald-100">{label}<input value={value} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} maxLength={maxLength} className="mt-2 w-full rounded-xl border border-white/15 bg-[#10251c] px-4 py-3 text-white outline-none focus:border-amber-300" /></label> }
+function Action({ children, secondary, disabled, onClick }) { return <button disabled={disabled} onClick={onClick} className={`w-full rounded-xl px-4 py-3 font-black uppercase tracking-wide transition disabled:cursor-not-allowed disabled:opacity-40 ${secondary ? 'border border-white/20 bg-white/5 hover:bg-white/10' : 'bg-amber-400 text-[#172217] hover:bg-amber-300'}`}>{children}</button> }
+function Message({ text }) { return text ? <p className="mt-5 text-center text-sm text-amber-200">{text}</p> : null }

@@ -1,0 +1,23 @@
+{
+  "rules": {
+    "games": {
+      "$room": {
+        ".read": "auth != null",
+        ".write": "!data.exists() ? (auth != null && newData.child('hostPlayerId').val() != null && newData.child('players').child(newData.child('hostPlayerId').val()).child('authUid').val() === auth.uid) : false",
+        "players": {
+          "$player": {
+            ".write": "auth != null && ((!data.exists() && !root.child('games').child($room).child('teamsLocked').val() && newData.child('authUid').val() === auth.uid) || root.child('games').child($room).child('players').child(root.child('games').child($room).child('hostPlayerId').val()).child('authUid').val() === auth.uid)",
+            ".validate": "newData.hasChildren(['playerId', 'authUid', 'name', 'slot', 'team', 'isHost', 'status'])"
+          }
+        },
+        "status": {
+          ".write": "auth != null && root.child('games').child($room).child('players').child(root.child('games').child($room).child('hostPlayerId').val()).child('authUid').val() === auth.uid"
+        },
+        "teamsLocked": {
+          ".write": "auth != null && root.child('games').child($room).child('players').child(root.child('games').child($room).child('hostPlayerId').val()).child('authUid').val() === auth.uid"
+        },
+        "$other": { ".write": false }
+      }
+    }
+  }
+}

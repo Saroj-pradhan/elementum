@@ -9,3 +9,9 @@
   font-family: "Satoshi";
   src: url("./assets/fonts/OTF/Satoshi-Medium.otf") format("opentype");
 }
+
+:root { font-family: Satoshi, system-ui, sans-serif; color: #fff7e7; background: #101b17; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }
+button { cursor: pointer; }
