@@ -1,4 +1,4 @@
-import { getDatabase, onValue, ref, runTransaction, update } from 'firebase/database'
+import { get, getDatabase, onValue, ref, runTransaction, set, update } from 'firebase/database'
 import { firebaseApp, firebaseEnabled } from './config'
 import { createRoomCode } from '../utils/roomCode'
 
@@ -26,19 +26,15 @@ export async function createRoom({ playerId, authUid, name }) {
 
 export async function joinRoom({ roomCode, playerId, authUid, name }) {
   const code = roomCode.trim().toUpperCase()
-  const result = await runTransaction(roomRef(code), (room) => {
-    if (!room || room.status !== 'lobby') return
-    if (room.players?.[playerId]) { room.players[playerId].status = 'connected'; return room }
-    const players = Object.values(room.players || {})
-    if (players.length >= 4) return
-    const taken = new Set(players.map((player) => player.slot))
-    const slot = [1, 2, 3, 4].find((value) => !taken.has(value))
-    room.players[playerId] = { playerId, authUid, name: name.trim(), slot, team: slot <= 2 ? 1 : 2, isHost: false, status: 'connected' }
-    return room
-  })
-  if (!result.committed) throw new Error('Room not found, full, or already started.')
-  const room = result.snapshot.val()
-  if (!room.players?.[playerId]) throw new Error('Game is full.')
+  const snapshot = await get(roomRef(code))
+  const room = snapshot.val()
+  if (!room || room.status !== 'lobby') throw new Error('Room not found or already started.')
+  if (room.players?.[playerId]) return code
+  const players = Object.values(room.players || {})
+  if (players.length >= 4) throw new Error('Game is full.')
+  const taken = new Set(players.map((player) => player.slot))
+  const slot = [1, 2, 3, 4].find((value) => !taken.has(value))
+  await set(ref(db(), `games/${code}/players/${playerId}`), { playerId, authUid, name: name.trim(), slot, team: slot <= 2 ? 1 : 2, isHost: false, status: 'connected' })
   return code
 }
 
@@ -48,12 +44,10 @@ export async function setTeam({ roomCode, playerId, hostPlayerId, targetPlayerId
 }
 
 export async function startRoom({ roomCode, playerId }) {
-  const result = await runTransaction(roomRef(roomCode), (room) => {
-    const players = Object.values(room?.players || {})
+  const snapshot = await get(roomRef(roomCode))
+  const room = snapshot.val()
+  const players = Object.values(room?.players || {})
     const counts = players.reduce((sum, player) => ({ ...sum, [player.team]: (sum[player.team] || 0) + 1 }), {})
-    if (!room || room.hostPlayerId !== playerId || room.status !== 'lobby' || players.length !== 4 || counts[1] !== 2 || counts[2] !== 2) return
-    room.status = 'starting'; room.teamsLocked = true
-    return room
-  })
-  if (!result.committed) throw new Error('Need four players and exactly two players on each team.')
+  if (!room || room.hostPlayerId !== playerId || room.status !== 'lobby' || players.length !== 4 || counts[1] !== 2 || counts[2] !== 2) throw new Error('Need four players and exactly two players on each team.')
+  await update(roomRef(roomCode), { status: 'starting', teamsLocked: true })
 }
