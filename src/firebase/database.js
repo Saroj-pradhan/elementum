@@ -3,8 +3,8 @@ import { firebaseApp, firebaseEnabled } from './config'
 import { createRoomCode } from '../utils/roomCode'
 import { createDeck, dealRound } from '../game/deck'
 import { legalCaptures } from '../game/captureRules'
-import { isValidBuild } from '../game/buildRules'
-import { cardValue } from '../game/cardUtils'
+import { isValidBuild, buildDetails } from '../game/buildRules'
+import { calculateTeamScores } from '../game/scoring'
 
 const db = () => {
   if (!firebaseEnabled) throw new Error('Firebase is not configured. Add VITE_FIREBASE_DATABASE_URL to .env.')
@@ -59,11 +59,11 @@ export async function startRoom({ roomCode, playerId }) {
   if (!room || room.hostPlayerId !== playerId || room.status !== 'lobby' || players.length !== 4 || counts[1] !== 2 || counts[2] !== 2) throw new Error('Need four players and exactly two players on each team.')
   const { tableCards, hands } = dealRound(createDeck())
   const seatedPlayers = [...players].sort((left, right) => left.slot - right.slot)
-  const publicPlayers = Object.fromEntries(seatedPlayers.map((player) => [player.playerId, { playerId: player.playerId, name: player.name, slot: player.slot, team: player.team, handCount: 12, capturedCount: 0 }]))
+  const publicPlayers = Object.fromEntries(seatedPlayers.map((player) => [player.playerId, { playerId: player.playerId, name: player.name, slot: player.slot, team: player.team, handCount: 12, capturedCount: 0, capturedCards: [] }]))
   const writes = {
     [`games/${roomCode}/status`]: 'playing',
     [`games/${roomCode}/teamsLocked`]: true,
-    [`games/${roomCode}/game`]: { roundNumber: 1, targetScore: 21, currentSlot: 1, tableCards, builds: {}, scores: { 1: 0, 2: 0 }, sweeps: { 1: 0, 2: 0 }, lastCapturingPlayer: null, players: publicPlayers },
+    [`games/${roomCode}/game`]: { phase: 'playing', roundNumber: 1, targetScore: 21, currentSlot: 1, tableCards, builds: {}, scores: { 1: 0, 2: 0 }, sweeps: { 1: 0, 2: 0 }, lastCapturingPlayer: null, players: publicPlayers, history: [] },
   }
   seatedPlayers.forEach((player, index) => { writes[`private/${roomCode}/${player.playerId}`] = { hand: hands[index], capturedCards: [] } })
   await update(ref(db()), writes)
@@ -73,11 +73,11 @@ export async function playMove({ roomCode, playerId, type, cardId, targetIds = [
   const [roomSnapshot, privateSnapshot] = await Promise.all([get(roomRef(roomCode)), get(ref(db(), `private/${roomCode}/${playerId}`))])
   const room = roomSnapshot.val(); const game = room?.game; const privateState = privateSnapshot.val()
   const player = game?.players?.[playerId]
-  if (!game || !player || !privateState || room.status !== 'playing') throw new Error('Game is not ready yet.')
+  if (!game || !player || !privateState || room.status !== 'playing' || game.phase !== 'playing') throw new Error('Game is not ready yet.')
   if (game.currentSlot !== player.slot) throw new Error("That's not your turn.")
   const playedCard = privateState.hand?.find((card) => card.id === cardId)
   if (!playedCard) throw new Error("You don't have that card.")
-  const tableCards = [...(game.tableCards || [])]; let builds = Object.values(game.builds || {}); const nextHand = privateState.hand.filter((card) => card.id !== cardId); const captured = [...(privateState.capturedCards || [])]
+  const tableCards = [...(game.tableCards || [])]; let builds = Object.values(game.builds || {}); const nextHand = privateState.hand.filter((card) => card.id !== cardId); let captured = [...(privateState.capturedCards || [])]
   if (type === 'trail') tableCards.push(playedCard)
   else if (type === 'capture') {
     const option = legalCaptures(playedCard, tableCards, builds, player.team).find((move) => move.buildId === buildId || (!move.buildId && move.cardIds.length === targetIds.length && move.cardIds.every((id) => targetIds.includes(id))))
@@ -87,12 +87,45 @@ export async function playMove({ roomCode, playerId, type, cardId, targetIds = [
   } else if (type === 'build') {
     const selectedCards = tableCards.filter((card) => targetIds.includes(card.id))
     if (selectedCards.length !== targetIds.length || !isValidBuild({ playedCard, selectedCards, hand: privateState.hand })) throw new Error("That build isn't legal. Keep a matching capture card in your hand.")
-    const value = cardValue(playedCard) + selectedCards.reduce((sum, card) => sum + cardValue(card), 0)
+    const build = buildDetails(playedCard, selectedCards, privateState.hand, playerId, player.team)
+    if (!build) throw new Error("That build isn't legal. Keep a matching capture card in your hand.")
     targetIds.forEach((id) => { const index = tableCards.findIndex((card) => card.id === id); if (index >= 0) tableCards.splice(index, 1) })
-    builds.push({ id: `build-${Date.now()}`, ownerPlayerId: playerId, team: player.team, cards: [playedCard, ...selectedCards], value, requiredCaptureRank: String(value) })
+    builds.push(build)
   } else throw new Error('Unsupported move.')
   const nextSlot = game.currentSlot === 4 ? 1 : game.currentSlot + 1
-  const writes = { [`games/${roomCode}/game/tableCards`]: tableCards, [`games/${roomCode}/game/builds`]: Object.fromEntries(builds.map((build) => [build.id, build])), [`games/${roomCode}/game/currentSlot`]: nextSlot, [`games/${roomCode}/game/players/${playerId}/handCount`]: nextHand.length, [`games/${roomCode}/game/players/${playerId}/capturedCount`]: captured.length, [`private/${roomCode}/${playerId}/hand`]: nextHand, [`private/${roomCode}/${playerId}/capturedCards`]: captured }
+  const publicPlayer = { ...player, handCount: nextHand.length, capturedCount: captured.length, capturedCards: captured }
+  const publicPlayers = { ...game.players, [playerId]: publicPlayer }
+  const writes = { [`games/${roomCode}/game/tableCards`]: tableCards, [`games/${roomCode}/game/builds`]: Object.fromEntries(builds.map((build) => [build.id, build])), [`games/${roomCode}/game/currentSlot`]: nextSlot, [`games/${roomCode}/game/players/${playerId}/handCount`]: nextHand.length, [`games/${roomCode}/game/players/${playerId}/capturedCount`]: captured.length, [`games/${roomCode}/game/players/${playerId}/capturedCards`]: captured, [`games/${roomCode}/game/history`]: [...(game.history || []), { playerId, type, cardId, targetIds, at: Date.now() }], [`private/${roomCode}/${playerId}/hand`]: nextHand, [`private/${roomCode}/${playerId}/capturedCards`]: captured }
   if (type === 'capture') { writes[`games/${roomCode}/game/lastCapturingPlayer`] = playerId; if (!tableCards.length && !builds.length) writes[`games/${roomCode}/game/sweeps/${player.team}`] = (game.sweeps?.[player.team] || 0) + 1 }
+  if (Object.values(publicPlayers).every((item) => item.handCount === 0)) {
+    const lastPlayerId = type === 'capture' ? playerId : game.lastCapturingPlayer
+    const remainder = [...tableCards, ...builds.flatMap((build) => build.cards)]
+    if (lastPlayerId && remainder.length) {
+      const lastPlayer = publicPlayers[lastPlayerId] || game.players[lastPlayerId]
+      const lastCards = [...(lastPlayer.capturedCards || []), ...remainder]
+      publicPlayers[lastPlayerId] = { ...lastPlayer, capturedCards: lastCards, capturedCount: lastCards.length }
+      writes[`games/${roomCode}/game/players/${lastPlayerId}/capturedCards`] = lastCards
+      writes[`games/${roomCode}/game/players/${lastPlayerId}/capturedCount`] = lastCards.length
+    }
+    const effectiveSweeps = { ...game.sweeps }
+    if (type === 'capture' && !tableCards.length && !builds.length) effectiveSweeps[player.team] = (effectiveSweeps[player.team] || 0) + 1
+    const roundScores = calculateTeamScores(Object.values(publicPlayers), effectiveSweeps)
+    const scores = { 1: (game.scores?.[1] || 0) + roundScores[1].total, 2: (game.scores?.[2] || 0) + roundScores[2].total }
+    writes[`games/${roomCode}/game/tableCards`] = []
+    writes[`games/${roomCode}/game/builds`] = {}
+    writes[`games/${roomCode}/game/phase`] = scores[1] >= 21 || scores[2] >= 21 ? 'game-over' : 'round-result'
+    writes[`games/${roomCode}/game/scores`] = scores
+    writes[`games/${roomCode}/game/roundResult`] = { scores: roundScores, totalScores: scores, winner: scores[1] >= 21 ? 1 : scores[2] >= 21 ? 2 : null }
+  }
+  await update(ref(db()), writes)
+}
+
+export async function startNextRound({ roomCode, playerId }) {
+  const snapshot = await get(roomRef(roomCode)); const room = snapshot.val(); const game = room?.game
+  if (!room || room.hostPlayerId !== playerId || room.status !== 'playing' || game?.phase !== 'round-result') throw new Error('Only the host can start the next round.')
+  const { tableCards, hands } = dealRound(createDeck()); const seatedPlayers = Object.values(room.players || {}).sort((left, right) => left.slot - right.slot)
+  const players = Object.fromEntries(seatedPlayers.map((player) => [player.playerId, { ...game.players[player.playerId], handCount: 12, capturedCount: 0, capturedCards: [] }]))
+  const writes = { [`games/${roomCode}/game`]: { phase: 'playing', roundNumber: (game.roundNumber || 1) + 1, targetScore: game.targetScore || 21, currentSlot: 1, tableCards, builds: {}, scores: game.scores || { 1: 0, 2: 0 }, sweeps: { 1: 0, 2: 0 }, lastCapturingPlayer: null, players, history: [] } }
+  seatedPlayers.forEach((player, index) => { writes[`private/${roomCode}/${player.playerId}`] = { hand: hands[index], capturedCards: [] } })
   await update(ref(db()), writes)
 }

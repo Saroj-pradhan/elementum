@@ -3,3 +3,9 @@ export function calculateRoundScore(capturedCards, sweeps = 0) {
   const result = { bigCasino: hasCard(capturedCards, '10', 'diamonds') ? 2 : 0, littleCasino: hasCard(capturedCards, '2', 'spades') ? 2 : 0, aces: capturedCards.filter((card) => card.rank === 'A').length, mostCards: capturedCards.length > 26 ? 1 : 0, mostSpades: capturedCards.filter((card) => card.suit === 'spades').length >= 7 ? 1 : 0, sweeps }
   return { ...result, total: Object.values(result).reduce((sum, value) => sum + value, 0) }
 }
+
+export function calculateTeamScores(players, sweeps = {}) {
+  const teams = { 1: [], 2: [] }
+  players.forEach((player) => { teams[player.team].push(...(player.capturedCards || [])) })
+  return Object.fromEntries([1, 2].map((team) => [team, calculateRoundScore(teams[team], sweeps[team] || 0)]))
+}

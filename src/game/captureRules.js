@@ -15,11 +15,17 @@ export function findCombinations(cards, target) {
   return results
 }
 
-export function legalCaptures(card, tableCards, builds, team) {
+const sameIds = (left, right) => left.length === right.length && left.every((id) => right.includes(id))
+
+export function legalCaptures(card, tableCards = [], builds = [], team) {
   const options = tableCards.filter((tableCard) => tableCard.rank === card.rank).map((tableCard) => ({ type: 'match', cardIds: [tableCard.id] }))
   if (isNumericCard(card)) {
     findCombinations(tableCards, cardValue(card)).filter((set) => set.length > 1).forEach((set) => options.push({ type: 'combine', cardIds: set.map((item) => item.id) }))
-    builds.filter((build) => build.value === cardValue(card) && build.ownerTeam === team).forEach((build) => options.push({ type: 'build', buildId: build.id, cardIds: [] }))
+    builds.filter((build) => Number(build.buildValue ?? build.value) === cardValue(card) && (build.team ?? build.ownerTeam) === team).forEach((build) => options.push({ type: 'build', buildId: build.id, cardIds: [] }))
   }
   return options
+}
+
+export function isLegalCapture(card, targetIds, tableCards, builds, team, buildId) {
+  return legalCaptures(card, tableCards, builds, team).some((move) => move.buildId === buildId || (!move.buildId && sameIds(move.cardIds, targetIds)))
 }
