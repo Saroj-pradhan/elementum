@@ -1,6 +1,7 @@
 import { get, getDatabase, onValue, ref, runTransaction, set, update } from 'firebase/database'
 import { firebaseApp, firebaseEnabled } from './config'
 import { createRoomCode } from '../utils/roomCode'
+import { createDeck, dealRound } from '../game/deck'
 
 const db = () => {
   if (!firebaseEnabled) throw new Error('Firebase is not configured. Add VITE_FIREBASE_DATABASE_URL to .env.')
@@ -10,6 +11,10 @@ const roomRef = (code) => ref(db(), `games/${code}`)
 
 export function watchRoom(code, callback) {
   return onValue(roomRef(code), (snapshot) => callback(snapshot.val()))
+}
+
+export function watchPrivateGame(roomCode, playerId, callback) {
+  return onValue(ref(db(), `private/${roomCode}/${playerId}`), (snapshot) => callback(snapshot.val()))
 }
 
 export async function createRoom({ playerId, authUid, name }) {
@@ -49,5 +54,14 @@ export async function startRoom({ roomCode, playerId }) {
   const players = Object.values(room?.players || {})
     const counts = players.reduce((sum, player) => ({ ...sum, [player.team]: (sum[player.team] || 0) + 1 }), {})
   if (!room || room.hostPlayerId !== playerId || room.status !== 'lobby' || players.length !== 4 || counts[1] !== 2 || counts[2] !== 2) throw new Error('Need four players and exactly two players on each team.')
-  await update(roomRef(roomCode), { status: 'starting', teamsLocked: true })
+  const { tableCards, hands } = dealRound(createDeck())
+  const seatedPlayers = [...players].sort((left, right) => left.slot - right.slot)
+  const publicPlayers = Object.fromEntries(seatedPlayers.map((player) => [player.playerId, { playerId: player.playerId, name: player.name, slot: player.slot, team: player.team, handCount: 12, capturedCount: 0 }]))
+  const writes = {
+    [`games/${roomCode}/status`]: 'playing',
+    [`games/${roomCode}/teamsLocked`]: true,
+    [`games/${roomCode}/game`]: { roundNumber: 1, targetScore: 21, currentSlot: 1, tableCards, builds: {}, scores: { 1: 0, 2: 0 }, sweeps: { 1: 0, 2: 0 }, lastCapturingPlayer: null, players: publicPlayers },
+  }
+  seatedPlayers.forEach((player, index) => { writes[`private/${roomCode}/${player.playerId}`] = { hand: hands[index], capturedCards: [] } })
+  await update(ref(db()), writes)
 }
