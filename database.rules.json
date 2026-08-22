@@ -26,7 +26,7 @@
       "$room": {
         "$player": {
           ".read": "auth != null && root.child('games').child($room).child('players').child($player).child('authUid').val() === auth.uid",
-          ".write": "auth != null && root.child('games').child($room).child('players').child($player).child('authUid').val() === auth.uid"
+          ".write": "auth != null && (root.child('games').child($room).child('players').child($player).child('authUid').val() === auth.uid || root.child('games').child($room).child('players').child(root.child('games').child($room).child('hostPlayerId').val()).child('authUid').val() === auth.uid)"
         }
       }
     }
