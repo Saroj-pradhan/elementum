@@ -4,19 +4,22 @@ import { ensureAnonymousUser } from '../firebase/auth'
 import { createRoom, joinRoom, setTeam, startRoom, watchRoom } from '../firebase/database'
 import { getPlayerId } from '../utils/roomCode'
 
-const savedRoom = () => localStorage.getItem('casino_room_code') || new URLSearchParams(location.search).get('room')?.toUpperCase() || ''
+const storedRoom = () => localStorage.getItem('casino_room_code') || ''
+const invitedRoom = () => new URLSearchParams(location.search).get('room')?.trim().toUpperCase() || ''
 
 export default function HomePage() {
-  const [mode, setMode] = useState('home'); const [name, setName] = useState(''); const [roomCode, setRoomCode] = useState(savedRoom)
+  const rememberedRoom = useMemo(storedRoom, [])
+  const invitationRoom = useMemo(invitedRoom, [])
+  const [mode, setMode] = useState(() => rememberedRoom ? 'loading' : invitationRoom ? 'join' : 'home'); const [name, setName] = useState(''); const [roomCode, setRoomCode] = useState(() => rememberedRoom || invitationRoom); const [joinedRoom, setJoinedRoom] = useState(rememberedRoom)
   const [room, setRoom] = useState(null); const [authUser, setAuthUser] = useState(null)
   const [message, setMessage] = useState(firebaseEnabled ? 'Connecting…' : 'Firebase needs VITE_FIREBASE_DATABASE_URL before online rooms can work.')
   const playerId = useMemo(() => getPlayerId(), [])
   useEffect(() => { if (firebaseEnabled) ensureAnonymousUser().then((user) => { setAuthUser(user); setMessage('') }).catch(() => setMessage('Could not connect. Check Firebase Anonymous Authentication.')) }, [])
-  useEffect(() => { if (!authUser || !roomCode) return; return watchRoom(roomCode, (next) => { setRoom(next); setMode(next ? (next.status === 'lobby' ? 'lobby' : 'game') : 'home'); setMessage(next ? '' : 'Room not found.') }) }, [authUser, roomCode])
-  const run = async (task) => { if (!authUser) return setMessage('Still connecting.'); if (!name.trim()) return setMessage('Enter your name first.'); try { setMessage('Working…'); const code = await task(); localStorage.setItem('casino_room_code', code); setRoomCode(code); setMode('lobby'); setMessage('') } catch (error) { setMessage(error.message) } }
+  useEffect(() => { if (!authUser || !joinedRoom) return; return watchRoom(joinedRoom, (next) => { setRoom(next); setMode(next ? (next.status === 'lobby' ? 'lobby' : 'game') : 'home'); setMessage(next ? '' : 'Room not found.') }) }, [authUser, joinedRoom])
+  const run = async (task) => { if (!authUser) return setMessage('Still connecting.'); if (!name.trim()) return setMessage('Enter your name first.'); try { setMessage('Working…'); const code = await task(); localStorage.setItem('casino_room_code', code); setRoomCode(code); setJoinedRoom(code); setMode('lobby'); setMessage('') } catch (error) { setMessage(error.message) } }
   const copy = async (value, label) => { await navigator.clipboard.writeText(value); setMessage(`${label} copied.`) }
   const share = async () => { const url = `${location.origin}${location.pathname}?room=${roomCode}`; if (navigator.share) await navigator.share({ title: 'Join my Cassino game', text: `Join room ${roomCode}`, url }); else await copy(url, 'Join link') }
-  const leave = () => { localStorage.removeItem('casino_room_code'); setRoomCode(''); setRoom(null); setMode('home'); setMessage('You left this device session.') }
+  const leave = () => { localStorage.removeItem('casino_room_code'); setRoomCode(''); setJoinedRoom(''); setRoom(null); setMode('home'); setMessage('You left this device session.') }
   if (mode === 'lobby' && room) return <Lobby {...{ room, playerId, message, setMessage, copy, share, leave }} />
   if (mode === 'game' && room) return <Waiting room={room} leave={leave} />
   return <Page><div className="mx-auto max-w-md pt-16 text-center sm:pt-28"><p className="font-['Gerbil'] text-sm tracking-[.4em] text-amber-300">CLASSIC CARD GAME</p><h1 className="mt-2 text-6xl font-black">CASSINO</h1><p className="mt-3 text-emerald-100/70">A private four-player partnership game.</p>{mode === 'home' ? <div className="mt-10 grid gap-3"><Action onClick={() => setMode('create')}>Create game</Action><Action secondary onClick={() => setMode('join')}>Join game</Action></div> : <div className="mt-10 rounded-3xl border border-white/10 bg-[#173128] p-5 text-left"><h2 className="text-xl font-black">{mode === 'join' ? 'Join a game' : 'Create a game'}</h2>{mode === 'join' && <Field label="Room code" value={roomCode} setValue={(value) => setRoomCode(value.toUpperCase())} placeholder="AB7K9C" maxLength="6" />}<Field label="Your name" value={name} setValue={setName} placeholder="Saroj" maxLength="20" /><Action onClick={() => mode === 'join' ? run(() => joinRoom({ roomCode, playerId, authUid: authUser.uid, name })) : run(() => createRoom({ playerId, authUid: authUser.uid, name }))}>{mode === 'join' ? 'Join room' : 'Create room'}</Action><button className="mt-4 w-full text-sm underline" onClick={() => setMode('home')}>Back</button></div>}<Message text={message} /></div></Page>
